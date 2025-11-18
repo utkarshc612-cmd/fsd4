@@ -1,15 +1,22 @@
 // Teacher Management System Frontend
-// Determine API base: if frontend is served from a different port (e.g. Live Server :5500),
-// direct API calls to the backend on port 3000. Otherwise use relative `/api` for same-origin.
+// Determine API base: supports both local development and production environments
 let API_BASE = (function() {
   try {
     const port = location.port;
-    // If running on a dev static server or different port, target backend at port 3000
+    const hostname = location.hostname;
+    
+    // Production environment: use same origin (deployed together on Render)
+    if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+      return '/api';
+    }
+    
+    // Local development: if running on different port (e.g. Live Server :5500),
+    // direct API calls to the backend on port 3000
     if (port && port !== '3000') {
-      return `${location.protocol}//${location.hostname}:3000/api`;
+      return `${location.protocol}//${hostname}:3000/api`;
     }
   } catch (e) {
-    // fallback to absolute backend
+    // fallback to relative path
   }
   return '/api';
 })();
