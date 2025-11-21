@@ -36,7 +36,7 @@ echo.
 if %ERRORLEVEL% EQU 0 (
     echo ========================================
     echo SUCCESS! Your code has been pushed to GitHub.
-    echo Repository: https://github.com/uc085211-boop/fullstack_app
+    echo Repository: https://github.com/utkarshc612-cmd/fsd4
     echo ========================================
 ) else (
     echo ========================================
