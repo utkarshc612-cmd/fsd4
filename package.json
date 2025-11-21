@@ -2,10 +2,10 @@
   "name": "fullstack-backend",
   "version": "1.0.0",
   "description": "Teacher Management System Backend",
-  "main": "app.js",
+  "main": "backend index.js",
   "scripts": {
-    "start": "node app.js",
-    "dev": "nodemon app.js"
+    "start": "backend index.js",
+    "dev": "backend index.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
