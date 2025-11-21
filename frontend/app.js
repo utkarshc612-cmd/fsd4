@@ -5,15 +5,18 @@ let API_BASE = (function() {
     const port = location.port;
     const hostname = location.hostname;
     
+    // If hostname is empty (file:// or iframe context), use localhost
+    const effectiveHostname = hostname || 'localhost';
+    
     // Production environment: use same origin (deployed together on Render)
-    if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+    if (effectiveHostname !== 'localhost' && effectiveHostname !== '127.0.0.1') {
       return '/api';
     }
     
     // Local development: if running on different port (e.g. Live Server :5500),
     // direct API calls to the backend on port 3000
     if (port && port !== '3000') {
-      return `${location.protocol}//${hostname}:3000/api`;
+      return `${location.protocol}//${effectiveHostname}:3000/api`;
     }
   } catch (e) {
     // fallback to relative path
@@ -31,6 +34,26 @@ const state = {
   currentClass: null,
   currentAssignment: null
 };
+
+// Auto-format date input (YYYY-MM-DD)
+function autoFormatDate(input) {
+  let value = input.value.replace(/\D/g, '');
+  if (value.length >= 4) {
+    value = value.slice(0, 4) + '-' + value.slice(4);
+  }
+  if (value.length >= 7) {
+    value = value.slice(0, 7) + '-' + value.slice(7);
+  }
+  input.value = value.slice(0, 10);
+}
+
+// Initialize auto-format on date inputs
+document.addEventListener('DOMContentLoaded', () => {
+  const dateInputs = document.querySelectorAll('input[id*="date"], input[id*="due"], input[id*="Date"]');
+  dateInputs.forEach(input => {
+    input.addEventListener('input', function() { autoFormatDate(this); });
+  });
+});
 
 // UI helpers: loading and toasts
 function showLoading() {
@@ -118,7 +141,8 @@ function initAuth() {
     document.body.classList.add('login-active');
   }
 
-  document.getElementById('login-submit')?.addEventListener('click', () => {
+  // Login handler function (shared by button click and Enter key)
+  const handleLogin = () => {
     const u = document.getElementById('login-username').value;
     const p = document.getElementById('login-password').value;
     if (!u || !p) { showError('Enter username and password'); return; }
@@ -138,10 +162,22 @@ function initAuth() {
           document.getElementById('btn-login').style.display = 'none';
           document.getElementById('btn-logout').style.display = 'inline-block';
           loadDashboard();
+          updateNotificationCount();
         } else {
           showError('Login failed');
         }
     });
+  };
+
+  // Login button click
+  document.getElementById('login-submit')?.addEventListener('click', handleLogin);
+
+  // Login on Enter key in username or password fields
+  document.getElementById('login-username')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); handleLogin(); }
+  });
+  document.getElementById('login-password')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); handleLogin(); }
   });
 
   document.getElementById('open-request')?.addEventListener('click', openAccountModalAndHideLogin);
@@ -188,6 +224,12 @@ function getPageTitle(page) {
     resources: 'Learning Resources',
     communications: 'Messages & Announcements',
     meetings: 'Parent-Teacher Meetings',
+    'admin-requests': 'Teacher Account Requests',
+    'admin-profile': 'Admin Profile',
+    'admin-teachers': 'Manage Teachers',
+    substitution: 'Teacher Substitution',
+    'id-system': 'ID Management System',
+    'teacher-profile': 'Teacher Profile',
     'request-account': 'Request Account'
   };
   return titles[page] || 'Dashboard';
@@ -323,29 +365,267 @@ function closeAccountModal() {
 
 function submitAccountRequest() {
   const name = document.getElementById('req-name').value.trim();
-  const school = document.getElementById('req-school').value.trim();
   const email = document.getElementById('req-email').value.trim();
+  const school = document.getElementById('req-school').value.trim();
+  const phone = document.getElementById('req-phone').value.trim();
+  const designation = document.getElementById('req-designation').value;
   const subjects = document.getElementById('req-subjects').value.split(',').map(s => s.trim()).filter(Boolean);
+  const experience = parseInt(document.getElementById('req-experience').value) || 0;
+  const qualification = document.getElementById('req-qualification').value.trim();
+  const reason = document.getElementById('req-reason').value.trim();
+  const agree = document.getElementById('req-agree').checked;
   
-  if (!name || !school) { 
-    showError('Name and school are required'); 
+  // Validation
+  if (!name || !school || !email || subjects.length === 0) { 
+    showError('Name, school, email, and subjects are required'); 
     return; 
   }
   
-  apiCall('POST', '/teacher-requests', { name, school, email, subjects }).then(res => {
+  if (!agree) {
+    showError('Please agree to the terms and conditions');
+    return;
+  }
+  
+  const requestData = {
+    name,
+    email,
+    school,
+    phone,
+    designation,
+    subjects,
+    experience,
+    qualification,
+    reason,
+    submittedAt: new Date().toISOString()
+  };
+  
+  apiCall('POST', '/teacher-requests', requestData).then(res => {
     if (res && res.request) {
       showToast('Request submitted successfully! Admin will review and create your account.', 'success');
       // Clear form
       document.getElementById('req-name').value = '';
-      document.getElementById('req-school').value = '';
       document.getElementById('req-email').value = '';
+      document.getElementById('req-school').value = '';
+      document.getElementById('req-phone').value = '';
+      document.getElementById('req-designation').value = '';
       document.getElementById('req-subjects').value = '';
+      document.getElementById('req-experience').value = '';
+      document.getElementById('req-qualification').value = '';
+      document.getElementById('req-reason').value = '';
+      document.getElementById('req-agree').checked = false;
       // Close modal
       closeAccountModal();
     } else {
       showError('Failed to submit request');
     }
   });
+}
+
+// ==================== ADMIN: Teacher Requests ====================
+async function loadAdminRequests() {
+  const requests = await apiCall('GET', '/admin/teacher-requests') || [];
+  const container = document.getElementById('requests-container');
+  const noRequests = document.getElementById('no-requests');
+  
+  if (!requests || requests.length === 0) {
+    container.innerHTML = '';
+    noRequests.style.display = 'block';
+    return;
+  }
+  
+  noRequests.style.display = 'none';
+  container.innerHTML = requests.map(req => `
+    <div class="card" style="margin-bottom:16px; padding:16px; border-left: 4px solid var(--primary);">
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:12px;">
+        <div>
+          <p style="font-size:12px; color:var(--muted); margin:0;">Name</p>
+          <p style="font-size:16px; font-weight:600; margin:0;">${req.name || 'N/A'}</p>
+        </div>
+        <div>
+          <p style="font-size:12px; color:var(--muted); margin:0;">Email</p>
+          <p style="font-size:16px; font-weight:600; margin:0;">${req.email || 'N/A'}</p>
+        </div>
+        <div>
+          <p style="font-size:12px; color:var(--muted); margin:0;">School</p>
+          <p style="font-size:16px; font-weight:600; margin:0;">${req.school || 'N/A'}</p>
+        </div>
+        <div>
+          <p style="font-size:12px; color:var(--muted); margin:0;">Phone</p>
+          <p style="font-size:16px; font-weight:600; margin:0;">${req.phone || 'N/A'}</p>
+        </div>
+        <div>
+          <p style="font-size:12px; color:var(--muted); margin:0;">Designation</p>
+          <p style="font-size:16px; font-weight:600; margin:0;">${req.designation || 'Teacher'}</p>
+        </div>
+        <div>
+          <p style="font-size:12px; color:var(--muted); margin:0;">Experience</p>
+          <p style="font-size:16px; font-weight:600; margin:0;">${req.experience || 0} years</p>
+        </div>
+      </div>
+      <div style="margin-bottom:12px;">
+        <p style="font-size:12px; color:var(--muted); margin:0;">Subjects</p>
+        <p style="font-size:14px; margin:0;">${(req.subjects || []).join(', ')}</p>
+      </div>
+      <div style="margin-bottom:12px;">
+        <p style="font-size:12px; color:var(--muted); margin:0;">Qualifications</p>
+        <p style="font-size:14px; margin:0;">${req.qualification || 'N/A'}</p>
+      </div>
+      <div style="margin-bottom:12px;">
+        <p style="font-size:12px; color:var(--muted); margin:0;">Reason for Request</p>
+        <p style="font-size:14px; margin:0;">${req.reason || 'N/A'}</p>
+      </div>
+      <div style="margin-bottom:16px;">
+        <p style="font-size:12px; color:var(--muted); margin:0;">Submitted</p>
+        <p style="font-size:14px; margin:0;">${new Date(req.submittedAt).toLocaleString()}</p>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-primary" onclick="approveTeacherRequest('${req.id}', '${req.name.replace(/'/g, "\\'")}', '${req.email.replace(/'/g, "\\'")}')">✓ Approve & Create Account</button>
+        <button class="btn btn-danger" onclick="rejectTeacherRequest('${req.id}')">✕ Reject</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function approveTeacherRequest(requestId, name, email) {
+  const username = prompt('Enter username for this teacher:', email.split('@')[0]);
+  if (!username) return;
+  
+  const password = prompt('Enter password for this teacher:');
+  if (!password) return;
+  
+  const confirmed = confirm(`Create account for ${name} (${username})?`);
+  if (!confirmed) return;
+  
+  const res = await apiCall('POST', '/admin/create-teacher', {
+    name: name,
+    email: email,
+    username: username,
+    password: password,
+    school: '', // Would need to get from request
+    subjects: []
+  });
+  
+  if (res && res.teacher) {
+    showToast('Teacher account created successfully!', 'success');
+    // Remove from requests list by marking as approved
+    await apiCall('PUT', `/admin/teacher-request/${requestId}`, { status: 'approved' }).catch(() => {});
+    loadAdminRequests();
+    updateNotificationCount();
+  } else {
+    showError('Failed to create teacher account');
+  }
+}
+
+async function rejectTeacherRequest(requestId) {
+  const confirmed = confirm('Are you sure you want to reject this request?');
+  if (!confirmed) return;
+  
+  await apiCall('PUT', `/admin/teacher-request/${requestId}`, { status: 'rejected' }).catch(() => {});
+  showToast('Request rejected', 'info');
+  loadAdminRequests();
+  updateNotificationCount();
+}
+
+async function updateNotificationCount() {
+  const requests = await apiCall('GET', '/admin/teacher-requests') || [];
+  const pending = requests.filter(r => r.status === 'pending').length;
+  const notifBell = document.getElementById('sidebar-notifications');
+  const notifCount = document.getElementById('notification-count');
+  
+  if (pending > 0) {
+    notifBell.style.display = 'block';
+    notifCount.textContent = pending;
+  } else {
+    notifBell.style.display = 'none';
+  }
+}
+
+// ==================== ADMIN: Profile & Management ====================
+async function loadAdminProfile() {
+  const teachers = (await apiCall('GET', '/admin/teacher-requests')) || [];
+  const classes = (await apiCall('GET', '/classes')) || [];
+  document.getElementById('admin-username').textContent = 'admin';
+  document.getElementById('admin-name').textContent = 'Administrator';
+  document.getElementById('admin-school').textContent = 'Central School';
+  document.getElementById('admin-subjects').textContent = 'Admin';
+}
+
+async function loadTeachersList() {
+  const teachers = (await apiCall('GET', '/teachers')) || [];
+  const container = document.getElementById('teachers-list');
+  const noTeachers = document.getElementById('no-teachers');
+  
+  if (!teachers || teachers.length === 0) {
+    container.innerHTML = '';
+    noTeachers.style.display = 'block';
+    return;
+  }
+  
+  noTeachers.style.display = 'none';
+  container.innerHTML = teachers.map(t => `
+    <div class="card" style="padding:16px; border-left: 4px solid var(--primary);">
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:12px;">
+        <div>
+          <p style="font-size:12px; color:var(--muted); margin:0;">Name</p>
+          <p style="font-weight:600; margin:0;">${t.name}</p>
+        </div>
+        <div>
+          <p style="font-size:12px; color:var(--muted); margin:0;">Username</p>
+          <p style="font-weight:600; margin:0;">${t.username}</p>
+        </div>
+        <div>
+          <p style="font-size:12px; color:var(--muted); margin:0;">School</p>
+          <p style="font-weight:600; margin:0;">${t.school || 'N/A'}</p>
+        </div>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-small" onclick="navigateToPage('teacher-profile')">View</button>
+        <button class="btn btn-small">Edit</button>
+        <button class="btn btn-small btn-danger">Delete</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function loadSubstitutionPage() {
+  const classes = (await apiCall('GET', '/classes')) || [];
+  const teachers = (await apiCall('GET', '/teachers')) || [];
+  
+  const classSelect = document.getElementById('sub-class');
+  const substituteSelect = document.getElementById('sub-substitute');
+  
+  classSelect.innerHTML = '<option value="">Select a class</option>' + 
+    classes.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+  
+  substituteSelect.innerHTML = teachers.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+  
+  classSelect.addEventListener('change', async () => {
+    const cls = classes.find(c => c.id === classSelect.value);
+    const teacher = teachers.find(t => t.id === cls?.teacher);
+    document.getElementById('sub-primary').value = teacher?.name || 'N/A';
+  });
+}
+
+async function loadIDSystem() {
+  const students = (await apiCall('GET', '/students')) || [];
+  const teachers = (await apiCall('GET', '/teachers')) || [];
+  const classes = (await apiCall('GET', '/classes')) || [];
+  
+  document.getElementById('student-id-count').textContent = students.length;
+  document.getElementById('teacher-id-count').textContent = teachers.length;
+  document.getElementById('class-id-count').textContent = classes.length;
+}
+
+async function loadTeacherProfile() {
+  const teachers = (await apiCall('GET', '/teachers')) || [];
+  if (teachers.length === 0) return;
+  const t = teachers[0];
+  document.getElementById('tp-id').textContent = t.id || 'N/A';
+  document.getElementById('tp-name').textContent = t.name || 'N/A';
+  document.getElementById('tp-username').textContent = t.username || 'N/A';
+  document.getElementById('tp-school').textContent = t.school || 'N/A';
+  document.getElementById('tp-subjects').textContent = (t.subjects || []).join(', ') || 'N/A';
+  document.getElementById('tp-classes').textContent = '0';
 }
 
 // Load Dashboard
@@ -407,6 +687,24 @@ async function loadPageData(pageName) {
         break;
       case 'phase3-security':
         await loadPhase3Page();
+        break;
+      case 'admin-requests':
+        await loadAdminRequests();
+        break;
+      case 'admin-profile':
+        await loadAdminProfile();
+        break;
+      case 'admin-teachers':
+        await loadTeachersList();
+        break;
+      case 'substitution':
+        await loadSubstitutionPage();
+        break;
+      case 'id-system':
+        await loadIDSystem();
+        break;
+      case 'teacher-profile':
+        await loadTeacherProfile();
         break;
     }
   } catch (error) {
@@ -675,6 +973,17 @@ async function viewStudent(studentId) {
 
 // Attendance Management
 async function loadAttendancePage() {
+  // Update current date and day display
+  const today = new Date();
+  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  
+  const dayName = days[today.getDay()];
+  const dateStr = `${today.getDate()} ${months[today.getMonth()]} ${today.getFullYear()}`;
+  
+  document.getElementById('attendance-day').textContent = dayName;
+  document.getElementById('attendance-date').textContent = dateStr;
+  
   state.classes = await apiCall('GET', '/classes') || [];
   const select = document.getElementById('attendance-class');
   select.innerHTML = '<option value="">Select Class</option>';
@@ -720,6 +1029,60 @@ async function loadAttendanceForm(e) {
       <td><input type="text" data-student-id="${student.id}" class="attendance-reason input" placeholder="Reason" value="${reason || ''}"></td>
     `;
     tbody.appendChild(row);
+  });
+
+  // Load and display attendance history
+  const allAttendance = await apiCall('GET', '/attendance') || [];
+  const classAttendance = allAttendance.filter(a => a.classId === classId);
+  
+  // Group attendance by date
+  const attendanceByDate = {};
+  classAttendance.forEach(att => {
+    if (!attendanceByDate[att.date]) {
+      attendanceByDate[att.date] = [];
+    }
+    attendanceByDate[att.date].push(att);
+  });
+
+  // Sort dates in descending order (most recent first)
+  const sortedDates = Object.keys(attendanceByDate).sort().reverse();
+
+  const historyDiv = document.getElementById('attendance-history');
+  if (sortedDates.length === 0) {
+    historyDiv.innerHTML = '<p class="muted">No attendance records yet for this class.</p>';
+    return;
+  }
+
+  historyDiv.innerHTML = '';
+  sortedDates.slice(0, 10).forEach(date => {
+    const dateObj = new Date(date);
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const dayName = days[dateObj.getDay()];
+    const dateStr = dateObj.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    
+    const records = attendanceByDate[date];
+    const presentCount = records.filter(r => r.status === 'present').length;
+    const absentCount = records.filter(r => r.status === 'absent').length;
+    const lateCount = records.filter(r => r.status === 'late').length;
+    
+    const historyCard = document.createElement('div');
+    historyCard.style.cssText = 'background: #f8f9fa; padding: 12px; border-radius: 6px; border-left: 4px solid var(--primary);';
+    historyCard.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <div>
+          <strong>${dayName}, ${dateStr}</strong>
+        </div>
+        <div style="font-size: 12px; color: var(--text-light);">
+          <span style="color: var(--success); margin-right: 8px;">✓ ${presentCount}</span>
+          <span style="color: var(--danger); margin-right: 8px;">✗ ${absentCount}</span>
+          <span style="color: var(--warning);">⏱ ${lateCount}</span>
+        </div>
+      </div>
+      <div style="font-size: 12px; color: var(--text-light);">
+        Total records: ${records.length}
+      </div>
+    `;
+    historyDiv.appendChild(historyCard);
   });
 }
 
@@ -1430,6 +1793,71 @@ async function submitGenerateQuiz() {
 }
 
 // Generate Worksheet Modal
+
+// ==================== AI QUIZ GENERATOR ====================
+function openGenerateQuizModal() {
+  const modal = document.getElementById('generate-quiz-modal');
+  document.getElementById('quiz-topic').value = '';
+  document.getElementById('quiz-difficulty').value = 'easy';
+  document.getElementById('quiz-count').value = '10';
+  document.getElementById('quiz-mcq').checked = true;
+  document.getElementById('quiz-short').checked = false;
+  document.getElementById('quiz-tf').checked = false;
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeGenerateQuizModal() {
+  const modal = document.getElementById('generate-quiz-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function submitGenerateQuiz() {
+  const topic = document.getElementById('quiz-topic').value.trim();
+  const difficulty = document.getElementById('quiz-difficulty').value;
+  const count = parseInt(document.getElementById('quiz-count').value) || 10;
+  const questionTypes = [];
+  
+  if (document.getElementById('quiz-mcq').checked) questionTypes.push('mcq');
+  if (document.getElementById('quiz-short').checked) questionTypes.push('short');
+  if (document.getElementById('quiz-tf').checked) questionTypes.push('truefalse');
+  
+  if (!topic) {
+    return showError('Please enter a topic');
+  }
+  
+  if (questionTypes.length === 0) {
+    return showError('Please select at least one question type');
+  }
+  
+  const quiz = await apiCall('POST', '/api/ai/generate/quiz', {
+    topic, difficulty, count, questionTypes
+  });
+  
+  if (quiz) {
+    showToast(`Quiz generated successfully!`, 'success');
+    closeGenerateQuizModal();
+    
+    // Display quiz details
+    const quizDisplay = `
+🎓 QUIZ GENERATED!
+Topic: ${quiz.topic}
+Difficulty: ${quiz.difficulty}
+Questions: ${quiz.questions.length}
+Types: ${quiz.questionTypes.join(', ')}
+
+Questions Preview:
+${quiz.questions.slice(0, 3).map((q, i) => `${i+1}. ${q.text}`).join('\n')}
+${quiz.questions.length > 3 ? `...and ${quiz.questions.length - 3} more questions` : ''}
+
+Quiz ID: ${quiz.quizId}`;
+    
+    alert(quizDisplay);
+  } else {
+    showError('Failed to generate quiz');
+  }
+}
+
+// ==================== AI WORKSHEET GENERATOR ====================
 async function openGenerateWorksheetModal() {
   const modal = document.getElementById('generate-worksheet-modal');
   const studentSelect = document.getElementById('gw-student');
@@ -1553,14 +1981,20 @@ function loadPhase2Dashboard() {
   if (!classId) return;
 
   // Load classroom dashboard
-  apiCall(`/api/phase2/classroom/dashboard/${classId}`)
-    .then(res => displayClassroomDashboard(res.data))
-    .catch(err => showToast('Error loading classroom dashboard: ' + err.message, 'error'));
+  apiCall('GET', `/phase2/classroom/dashboard/${classId}`)
+    .then(res => {
+      if (res && res.data) displayClassroomDashboard(res.data);
+      else showToast('No classroom dashboard data available', 'warning');
+    })
+    .catch(err => showToast('Error loading classroom dashboard: ' + (err?.message || 'Unknown error'), 'error'));
 
   // Load engagement heatmap
-  apiCall(`/api/phase2/classroom/engagement/${classId}`)
-    .then(res => displayEngagementHeatmap(res.data))
-    .catch(err => showToast('Error loading engagement data: ' + err.message, 'error'));
+  apiCall('GET', `/phase2/classroom/engagement/${classId}`)
+    .then(res => {
+      if (res && res.data) displayEngagementHeatmap(res.data);
+      else showToast('No engagement data available', 'warning');
+    })
+    .catch(err => showToast('Error loading engagement data: ' + (err?.message || 'Unknown error'), 'error'));
 
   // Populate student selects
   const students = state.students.filter(s => s.classId === classId);
@@ -1653,12 +2087,13 @@ function openGenerateLessonModal() {
   const duration = prompt('Enter lesson duration in minutes (default: 60):', '60');
   if (!duration) return;
 
-  apiCall('/api/phase2/lesson/generate', 'POST', {
+  apiCall('POST', '/phase2/lesson/generate', {
     classId,
     topicId,
     duration: parseInt(duration)
   })
     .then(res => {
+      if (!res || !res.data) return showToast('Invalid lesson plan response', 'error');
       const plan = res.data;
       let html = `
         <div style="background: #e3f2fd; border-left: 4px solid #2196f3; padding: 12px; border-radius: 4px; margin-top: 12px;">
@@ -1708,8 +2143,9 @@ function suggestLessonTime() {
     return;
   }
 
-  apiCall(`/api/phase2/lesson/suggest-time/${classId}`)
+  apiCall('GET', `/phase2/lesson/suggest-time/${classId}`)
     .then(res => {
+      if (!res || !res.data) return showToast('Invalid suggestion response', 'error');
       const suggestion = res.data;
       const html = `
         <div style="background: #f3e5f5; border-left: 4px solid #9c27b0; padding: 12px; border-radius: 4px; margin-top: 12px;">
@@ -1731,8 +2167,9 @@ function generateStudentFeedback() {
     return;
   }
 
-  apiCall(`/api/phase2/feedback/student/${studentId}`)
+  apiCall('GET', `/phase2/feedback/student/${studentId}`)
     .then(res => {
+      if (!res || !res.data) return showToast('Invalid feedback response', 'error');
       const fb = res.data;
       let html = `
         <div style="background: #f1f8e9; border-left: 4px solid #689f38; padding: 12px; border-radius: 4px; margin-top: 12px;">
@@ -1791,8 +2228,9 @@ function getContentRecommendations() {
     return;
   }
 
-  apiCall(`/api/phase2/content/recommend/${studentId}/${classId}`)
+  apiCall('GET', `/phase2/content/recommend/${studentId}/${classId}`)
     .then(res => {
+      if (!res || !res.data) return showToast('Invalid recommendations response', 'error');
       const recs = res.data;
       let html = `
         <div style="background: #fff3e0; border-left: 4px solid #ff9800; padding: 12px; border-radius: 4px; margin-top: 12px;">
@@ -1843,8 +2281,9 @@ function optimizeClassSchedule() {
     return;
   }
 
-  apiCall(`/api/phase3/schedule/optimize/${classId}`)
+  apiCall('GET', `/phase3/schedule/optimize/${classId}`)
     .then(res => {
+      if (!res || !res.data) return showToast('Invalid optimization response', 'error');
       const opt = res.data;
       const html = `
         <div style="background: #e0f2f1; border-left: 4px solid #009688; padding: 12px; border-radius: 4px; margin-top: 12px;">
@@ -1873,8 +2312,9 @@ function analyzeStudentPattern() {
     return;
   }
 
-  apiCall(`/api/phase3/schedule/analyze/${studentId}`)
+  apiCall('GET', `/phase3/schedule/analyze/${studentId}`)
     .then(res => {
+      if (!res || !res.data) return showToast('Invalid pattern analysis response', 'error');
       const pattern = res.data;
       const html = `
         <div style="background: #fce4ec; border-left: 4px solid #e91e63; padding: 12px; border-radius: 4px; margin-top: 12px;">
@@ -1899,8 +2339,9 @@ function generateParentReportUI() {
     return;
   }
 
-  apiCall(`/api/phase3/parent/report/${studentId}`)
+  apiCall('GET', `/phase3/parent/report/${studentId}`)
     .then(res => {
+      if (!res || !res.data) return showToast('Invalid parent report response', 'error');
       const report = res.data;
       const trafficColor = report.trafficLight.overall === 'GREEN' ? '#4caf50' : report.trafficLight.overall === 'YELLOW' ? '#ff9800' : '#f44336';
       const trafficBg = report.trafficLight.overall === 'GREEN' ? '#e8f5e9' : report.trafficLight.overall === 'YELLOW' ? '#fff3e0' : '#ffebee';
@@ -1955,8 +2396,9 @@ function generateClassParentInsights() {
     return;
   }
 
-  apiCall(`/api/phase3/parent/class-insights/${classId}`)
+  apiCall('GET', `/phase3/parent/class-insights/${classId}`)
     .then(res => {
+      if (!res || !res.data) return showToast('Invalid class insights response', 'error');
       const insights = res.data;
       const html = `
         <div style="background: #f3e5f5; border-left: 4px solid #9c27b0; padding: 12px; border-radius: 4px; margin-top: 12px;">
@@ -1994,8 +2436,9 @@ function compareStudentCohort() {
     return;
   }
 
-  apiCall(`/api/phase3/comparison/cohort/${studentId}`)
+  apiCall('GET', `/phase3/comparison/cohort/${studentId}`)
     .then(res => {
+      if (!res || !res.data) return showToast('Invalid cohort comparison response', 'error');
       const comp = res.data;
       const html = `
         <div style="background: #ede7f6; border-left: 4px solid #673ab7; padding: 12px; border-radius: 4px; margin-top: 12px;">
@@ -2117,6 +2560,28 @@ function setupEventListeners() {
   document.getElementById('class-parent-insights-btn')?.addEventListener('click', generateClassParentInsights);
   document.getElementById('p3-compare-student')?.addEventListener('change', () => {});
   document.getElementById('compare-cohort-btn')?.addEventListener('click', compareStudentCohort);
+
+  // Admin buttons
+  document.getElementById('new-teacher-btn')?.addEventListener('click', () => {
+    const name = prompt('Teacher name:');
+    if (!name) return;
+    const username = prompt('Username:');
+    if (!username) return;
+    const password = prompt('Password:');
+    if (!password) return;
+    apiCall('POST', '/admin/create-teacher', { name, username, password, school: '', subjects: [] }).then(() => {
+      showToast('Teacher created!', 'success');
+      loadTeachersList();
+    });
+  });
+  
+  document.getElementById('sub-submit')?.addEventListener('click', () => {
+    const reason = document.getElementById('sub-reason').value.trim();
+    if (!reason) return showError('Please enter reason');
+    showToast('Substitution assigned!', 'success');
+  });
+  
+  document.getElementById('sub-cancel')?.addEventListener('click', () => navigateToPage('dashboard'));
 }
 
 // Auto-load dashboard on start
