@@ -4,8 +4,8 @@
   "description": "Teacher Management System Backend",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node app.js",
+    "dev": "nodemon app.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
